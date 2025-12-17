@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Electromagnetic Field Simulation</title>
+</head>
+<body>
+    <canvas id="em-canvas" width="{{ width }}" height="{{ height }}"
+            data-width="{{ width }}" data-height="{{ height }}"></canvas>
+    <script>
+        const canvas = document.getElementById('em-canvas');
+        const ctx = canvas.getContext('2d');
+
+        const WIDTH = Number(canvas.getAttribute('data-width')) || 800;
+        const HEIGHT = Number(canvas.getAttribute('data-height')) || 600;
+
+        // Store trails for each moving charge
+        const trails = {};
+        const MAX_TRAIL = 200;
+
+        function drawEquipotentialLines(charges) {
+            // Draw equipotential lines (contours of constant electric potential)
+            const potentialLevels = [-2, -1, -0.5, -0.2, 0.2, 0.5, 1, 2];
+            const step = 10;
+            
+            // Calculate potential at a point
+            function potential(x, y) {
+                let V = 0;
+                for (const charge of charges) {
+                    const dx = x - charge.x;
+                    const dy = y - charge.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    if (dist < 15) return null; // Too close to charge
+                    V += charge.charge / dist;
+                }
+                return V;
+            }
+            
+            ctx.lineWidth = 0.75;
+            
+            // Use marching squares to find contour lines
+            for (const level of potentialLevels) {
+                ctx.strokeStyle = level > 0 ? 'rgba(229, 57, 53, 0.25)' : 'rgba(30, 136, 229, 0.25)';
+                
+                for (let x = 0; x < WIDTH - step; x += step) {
+                    for (let y = 0; y < HEIGHT - step; y += step) {
+                        const p00 = potential(x, y);
+                        const p10 = potential(x + step, y);
+                        const p01 = potential(x, y + step);
+                        const p11 = potential(x + step, y + step);
+                        
+                        if (p00 === null || p10 === null || p01 === null || p11 === null) continue;
+                        
+                        // Check if contour crosses this cell
+                        const above = [p00 > level, p10 > level, p01 > level, p11 > level];
+                        const allSame = above.every(v => v === above[0]);
+                        if (allSame) continue;
+                        
+                        // Linear interpolation to find crossing points
+                        const crossings = [];
+                        
+                        // Top edge
+                        if (above[0] !== above[1]) {
+                            const t = (level - p00) / (p10 - p00);
+                            crossings.push({ x: x + t * step, y: y });
+                        }
+                        // Bottom edge
+                        if (above[2] !== above[3]) {
+                            const t = (level - p01) / (p11 - p01);
+                            crossings.push({ x: x + t * step, y: y + step });
+                        }
+                        // Left edge
+                        if (above[0] !== above[2]) {
+                            const t = (level - p00) / (p01 - p00);
+                            crossings.push({ x: x, y: y + t * step });
+                        }
+                        // Right edge
+                        if (above[1] !== above[3]) {
+                            const t = (level - p10) / (p11 - p10);
+                            crossings.push({ x: x + step, y: y + t * step });
+                        }
+                        
+                        if (crossings.length >= 2) {
+                            ctx.beginPath();
+                            ctx.moveTo(crossings[0].x, crossings[0].y);
+                            ctx.lineTo(crossings[1].x, crossings[1].y);
+                            ctx.stroke();
+                        }
+                    }
+                }
+            }
+        }
+
+        function drawFieldLines(charges) {
+            // Draw electric field lines emanating from all charges
+            ctx.strokeStyle = 'rgba(100, 100, 100, 0.3)';
+            ctx.lineWidth = 1;
+            
+            for (const charge of charges) {
+                const numLines = 12;
+                for (let i = 0; i < numLines; i++) {
+                    const angle = (2 * Math.PI * i) / numLines;
+                    drawFieldLine(charge.x, charge.y, angle, charge.charge > 0, charges);
+                }
+            }
+        }
+
+        function drawFieldLine(startX, startY, angle, outward, charges) {
+            const stepSize = 5;
+            const maxSteps = 100;
+            
+            let x = startX + 20 * Math.cos(angle);
+            let y = startY + 20 * Math.sin(angle);
+            
+            ctx.beginPath();
+            ctx.moveTo(x, y);
+            
+            for (let step = 0; step < maxSteps; step++) {
+                let ex = 0, ey = 0;
+                
+                // Calculate electric field at this point
+                for (const charge of charges) {
+                    const dx = x - charge.x;
+                    const dy = y - charge.y;
+                    const distSq = dx * dx + dy * dy;
+                    const dist = Math.sqrt(distSq);
+                    
+                    if (dist < 15) {
+                        ctx.stroke();
+                        return;
+                    }
+                    
+                    const fieldMag = charge.charge / distSq;
+                    ex += fieldMag * dx / dist;
+                    ey += fieldMag * dy / dist;
+                }
+                
+                // Normalize and step
+                const mag = Math.sqrt(ex * ex + ey * ey);
+                if (mag < 0.0001) break;
+                
+                const direction = outward ? 1 : -1;
+                x += direction * stepSize * ex / mag;
+                y += direction * stepSize * ey / mag;
+                
+                if (x < 0 || x > WIDTH || y < 0 || y > HEIGHT) break;
+                
+                ctx.lineTo(x, y);
+            }
+            
+            ctx.stroke();
+        }
+
+        function drawScene(state) {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            if (!state || !state.charges) return;
+
+            // Draw field lines
+            drawFieldLines(state.charges);
+
+            // Draw trails for moving charges
+            for (let i = 0; i < state.charges.length; i++) {
+                const charge = state.charges[i];
+                if (charge.fixed) continue;
+
+                if (!trails[i]) trails[i] = [];
+                trails[i].push({ x: charge.x, y: charge.y });
+                if (trails[i].length > MAX_TRAIL) trails[i].shift();
+
+                if (trails[i].length > 1) {
+                    ctx.beginPath();
+                    ctx.moveTo(trails[i][0].x, trails[i][0].y);
+                    for (let j = 1; j < trails[i].length; j++) {
+                        ctx.lineTo(trails[i][j].x, trails[i][j].y);
+                    }
+                    ctx.strokeStyle = charge.charge > 0 ? 'rgba(229, 57, 53, 0.7)' : 'rgba(30, 136, 229, 0.7)';
+                    ctx.lineWidth = 1.25;
+                    ctx.stroke();
+                }
+            }
+
+            // Draw charges
+            for (const charge of state.charges) {
+                // Draw charge circle (matching three-body-problem style)
+                ctx.beginPath();
+                ctx.arc(charge.x, charge.y, 10, 0, 2 * Math.PI);
+                ctx.fillStyle = charge.charge > 0 ? '#e53935' : '#1e88e5';
+                ctx.fill();
+                ctx.strokeStyle = '#222';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+            }
+
+            // Draw legend
+            ctx.fillStyle = '#333';
+            ctx.font = '14px Arial';
+            ctx.textAlign = 'left';
+            ctx.fillText('Red (+) = Positive charge', 10, 20);
+            ctx.fillText('Blue (−) = Negative charge', 10, 40);
+            ctx.fillText('Thick border = Fixed charge', 10, 60);
+        }
+
+        let latestState = null;
+
+        async function pollState() {
+            try {
+                const response = await fetch('/state', { cache: 'no-store' });
+                if (response.ok) {
+                    latestState = await response.json();
+                }
+            } catch (e) {
+                // ignore fetch errors
+            }
+        }
+
+        function animate() {
+            drawScene(latestState);
+            requestAnimationFrame(animate);
+        }
+
+        // Start polling at ~60Hz and animate at display refresh rate
+        setInterval(pollState, 16);
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>
